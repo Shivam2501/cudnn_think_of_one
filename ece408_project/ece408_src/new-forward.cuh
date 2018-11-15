@@ -9,7 +9,7 @@ namespace mxnet
 namespace op
 {
 
-#define TILE_WIDTH 8
+#define TILE_WIDTH 32
 
 __global__ void forward_kernel(float *y, const float *x, const float *k, const int B, const int M, const int C, const int H, const int W, const int K, int W_grid)
 {
@@ -24,7 +24,7 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
 #define y4d(b , m, h, w) y[(b) * (M * H_out * W_out) + (m) * (H_out * W_out) + (h) * (W_out) + w]
 #define x4d(b, c, h_plus_p, w_plus_q) x[(b) * (C * H * W) + (c) * (H * W) + (h_plus_p) * (W) + w_plus_q]
 #define k4d(m, c, p, q) k[(m) * (C * K * K) + (c) * (K * K) + (p) * (K) + q]
-#define kernel_shared(i, h, w) kernel[i * (h * w) + h * w + w]
+#define kernel_shared(i, h, w) kernel[i * (K * K) + h * K + w]
 
     const int H_out = H - K + 1;
     const int W_out = W - K + 1;
@@ -36,10 +36,9 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
 
     extern __shared__ float kernel[];
 
-    if(b == 0 && h < K && w < K){
+    if(h < K && w < K){
 	for (int i = 0; i < C; i++){
             kernel_shared(i, h, w) = k4d(m, i, h, w);
-//            printf("k[i] = %f\t", kernel_shared(i, h, w));
 	}
     }
     __syncthreads();
@@ -57,10 +56,12 @@ if (m < M && h < H_out && w < W_out){
     for (int c = 0; c < C; c++){
        for (int p = 0; p < K; p++){
             for (int q = 0; q < K; q++){
-                out += kernel_shared(c, p, q) * x4d(b, c, h+p, w+q);
-                //out += k4d(m, c, p, q) * x4d(b, c, h+p, w+q);
+//                out += kernel_shared(c, p, q) * x4d(b, c, h+p, w+q);
+//		printf("%f\t", kernel_shared(c, p, q));
+                out += k4d(m, c, p, q) * x4d(b, c, h+p, w+q);
             }
         }
+//	printf("\n");
     }  
     y4d(b, m, h, w) = out;
 }
