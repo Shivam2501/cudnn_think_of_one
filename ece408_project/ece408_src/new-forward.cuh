@@ -65,9 +65,12 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
 
     extern __shared__ float input[]; // size = C * (BLOCK_WIDTH) * (BLOCK_WIDTH) * sizeof(float)
 
-    if(h < H && w < W)
-	for (int c = 0; c < C; c++)
+    if(h < H && w < W) {
+	    for (int c = 0; c < C; c++)
             input_shared(c, threadIdx.y, threadIdx.x) = x4d(b, c, h, w);
+    } else
+        for (int c = 0; c < C; c++)
+            input_shared(c, threadIdx.y, threadIdx.x) = 0.0;
     __syncthreads();
 
 //    (void)H_out; // silence declared but never referenced warning. remove this line when you start working
