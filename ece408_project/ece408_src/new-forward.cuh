@@ -10,40 +10,73 @@ namespace op
 {
 
 #define TILE_WIDTH 32
-#define MASK_WIDTH 7
-#define BLOCK_WIDTH (TILE_WIDTH + MASK_WIDTH - 1)
-#define BM_GRID_SIZE 1 
+#define NUM_THREADS 1024
+
+// From mp3
+__global__ void matrixMultiplyShared(float *A, float *B, float *C,
+                                     int numARows, int numAColumns,
+                                     int numBRows, int numBColumns,
+                                     int numCRows, int numCColumns) {
+    float value = 0;
+    int row = blockDim.y * blockIdx.y + threadIdx.y;
+    int column = blockDim.x * blockIdx.x + threadIdx.x;
+
+    __shared__ float subTileM[TILE_WIDTH][TILE_WIDTH];
+    __shared__ float subTileN[TILE_WIDTH][TILE_WIDTH];
+
+    for (int i = 0; i < (TILE_WIDTH+numAColumns-1)/TILE_WIDTH; i++) {
+        if (i*TILE_WIDTH+threadIdx.x<numAColumns && row<numARows)
+            subTileM[threadIdx.y][threadIdx.x] = A[row*numAColumns + i*TILE_WIDTH +threadIdx.x];
+        else
+            subTileM[threadIdx.y][threadIdx.x] = 0;
+
+        if (i*TILE_WIDTH+threadIdx.y<numBRows && column<numBColumns)
+            subTileN[threadIdx.y][threadIdx.x] = B[(numBRows * numBColumns) * blockIdx.z + numBColumns * (i*TILE_WIDTH+threadIdx.y) + column];
+        else
+            subTileN[threadIdx.y][threadIdx.x] = 0;
+
+        __syncthreads();
+
+        if (row < numCRows && column < numCColumns) {
+            for (int j = 0; j < TILE_WIDTH; j++)
+                value += subTileM[threadIdx.y][j] * subTileN[j][threadIdx.x];
+        }
+
+        __syncthreads();
+    }
+
+    if (row < numCRows && column < numCColumns)
+        C[(numCRows * numCColumns) * blockIdx.z + numCColumns * row + column] = value;
+}
+
+__global__ void forward_kernel_unroll(const float* x, float* unroll_x,
+    const int H, const int W, const int B, const int C, const int K,
+    const int W_out, const int matrixHeight, const int matrixWidth) {
+
+    #define x4d(b,m,h,w) x[(b) * (C * H * W) + (m) * (H * W) + (h) * (W) + w]
+    #define y4d(m,h,w) unroll_x[(m) * (matrixHeight * matrixWidth) + (h) * (matrixWidth) + w]
+
+    const int threadIndex = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (threadIndex < C * matrixWidth) {
+        const int row = (threadIndex % matrixWidth) / W_out;
+        const int column = (threadIndex % matrixWidth) % W_out;
+
+        for (int i = 0; i < K; ++i) {
+            for (int j = 0; j < K; ++j) {
+                y4d(blockIdx.y, (threadIndex / matrixWidth * K * K) + (i * K) + j, row * W_out + column) = x4d(blockIdx.y, threadIndex / matrixWidth, row + i, column + j);
+            }
+        }
+    }
+}
 
 __global__ void forward_kernel(float *y, const float *x, const float *k, const int B, const int M, const int C, const int H, const int W, const int K, int W_grid)
 {
-
-    /*
-    Modify this function to implement the forward pass described in Chapter 16.
-    We have added an additional dimension to the tensors to support an entire mini-batch
-    The goal here is to be correct AND fast.
-    We have some nice #defs for you below to simplify indexing. Feel free to use them, or create your own.
-    */
-
 #define y4d(b , m, h, w) y[(b) * (M * H_out * W_out) + (m) * (H_out * W_out) + (h) * (W_out) + w]
 #define x4d(b, c, h_plus_p, w_plus_q) x[(b) * (C * H * W) + (c) * (H * W) + (h_plus_p) * (W) + w_plus_q]
 #define k4d(m, c, p, q) k[(m) * (C * K * K) + (c) * (K * K) + (p) * (K) + q]
 #define kernel_shared(i, h, w) kernel[i * (K * K) + h * K + w]
 #define input_shared(i, j, k) input[i * (TILE_WIDTH * TILE_WIDTH) + j * TILE_WIDTH + k]
-
-/*    if ((blockIdx.x * blockDim.x + threadIdx.x == 0) && (blockIdx.y * blockDim.y + threadIdx.y == 0) && (blockIdx.z * blockDim.z + threadIdx.z == 0))
-    for (int m = 0; m < M; m++){
-	    printf("m = %d\n", m);
-	    for (int c = 0; c < C; c++){
-		    printf("c = %d\n", c);
-		    for (int i = 0; i < K; i++){
-			   for (int j = 0; j < K; j++){
-				   printf("%f\t", k4d(m, c, i, j));
-			   }
-			   printf("\n");
-		    }
-	    }
-    }
-*/
 	
     const int H_out = H - K + 1;
     const int W_out = W - K + 1;
@@ -54,23 +87,6 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
     int h = (blockIdx.y / W_grid) * TILE_WIDTH + threadIdx.y;
     int w = (blockIdx.y % W_grid) * TILE_WIDTH + threadIdx.x;
 
-/*
-    int b = (blockIdx.z % B_grid) * BM_GRID_SIZE + (threadIdx.z / BM_GRID_SIZE);
-    int m = (blockIdx.z / B_grid) * BM_GRID_SIZE + (threadIdx.z % BM_GRID_SIZE);
-    int h = blockDim.y * blockIdx.y + threadIdx.y;
-    int w = blockDim.x * blockIdx.x + threadIdx.x;
-*/
-/*
-    if ((blockIdx.x * blockDim.x + threadIdx.x == 0) && (blockIdx.y * blockDim.y + threadIdx.y == 0) && (blockIdx.z == 1)){
-        for (int i = 0; i < H; i++){
-	    for (int j = 0; j < W; j++){
-		printf("%f\t", x4d(3, 0, i, j));
-	    }
-    	    printf("\n");
-	}
-    }
-*/
-
     extern __shared__ float input[]; // size = C * (TILE_WIDTH) * (TILE_WIDTH) * sizeof(float)
 
     if(h < H && w < W) 
@@ -80,34 +96,9 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
         for (int c = 0; c < C; c++)
             input_shared(c, threadIdx.y, threadIdx.x) = 0.0;
     __syncthreads();
-/*
-    if (w == 0 && h == 0 && b == 25 && m == 0){
-	for (int i = 0; i < TILE_WIDTH; i++){
-	    for (int j =0; j < TILE_WIDTH; j++){
-                printf("%f\t", input_shared(0, i, j));
-	    }
-	    printf("\n");
-	}
-	printf("Actual\n");
-	for (int i = 0; i < TILE_WIDTH; i++){
-	    for (int j =0; j < TILE_WIDTH; j++){
-                printf("%f\t", x4d(b, 0, h+i, w+j));
-	    }
-	    printf("\n");
-	}
-    }
-*/
-
-//    (void)H_out; // silence declared but never referenced warning. remove this line when you start working
-//    (void)W_out; // silence declared but never referenced warning. remove this line when you start working
-
-// An example use of these macros:
-// float a = y4d(0,0,0,0)
-// y4d(0,0,0,0) = a
 
     float out = 0.0f;
 
-//    if (threadIdx.x < TILE_WIDTH && threadIdx.y < TILE_WIDTH){
     if (m < M && h < H_out && w < W_out){
         for (int c = 0; c < C; c++){
             for (int p = 0; p < K; p++){
@@ -121,8 +112,6 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
         }
         y4d(b, m, h, w) = out;
     }
-/*    __syncthreads();
-*/
 #undef y4d
 #undef x4d
 #undef k4d
@@ -138,53 +127,35 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
 template <>
 void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tensor<gpu, 4, float> &x, const mshadow::Tensor<gpu, 4, float> &k)
 {
-
-    // Use mxnet's CHECK_EQ to do assertions.
-    // Remove this assertion when you do your implementation!
-//    CHECK_EQ(0, 1) << "Remove this line and replace with your implementation";
-
     // Extract the tensor dimensions into B,M,C,H,W,K
     const int B = x.shape_[0];
-    const int M = y.shape_[1];
-    const int C = x.shape_[1];
+    const int M = k.shape_[0];
+    const int C = k.shape_[1];
     const int H = x.shape_[2];
     const int W = x.shape_[3];
     const int K = k.shape_[3];
-    int W_grid = ceil((W - K + 1) / (TILE_WIDTH * 1.0));
-    int H_grid = ceil((H - K + 1) / (TILE_WIDTH *1.0));
-    const int Y = H_grid * W_grid;
 
-    int B_grid = ceil(B / (1.0 * BM_GRID_SIZE));
-    int M_grid = ceil(M / (1.0 * BM_GRID_SIZE));
-    const int BM = B_grid * M_grid;
+    const int W_out = W - K + 1;
+    const int H_out = H - K + 1;
+    const int matrixWidth = H_out * W_out;
+    const int matrixHeight = C * K * K;
 
-/*  printf("LOG : B = %d\n", B);
-    printf("LOG : M = %d\n", M);
-    printf("LOG : C = %d\n", C);
-    printf("LOG : H = %d\n", H);
-    printf("LOG : W = %d\n", W);
-    printf("LOG : K = %d\n", K);
-    printf("LOG : W_grid = %d\n", W_grid);
-    printf("LOG : H_grid = %d\n", H_grid);
-    printf("LOG : Y = %d\n", Y); // 17*17
-*/
+    mshadow::Tensor<gpu, 3, float> unroll_x;
+    unroll_x.shape_ = mshadow::Shape3(matrixWidth, matrixHeight, B);
+    mshadow::AllocSpace(&unroll_x);
 
-    // Set the kernel dimensions
-    dim3 gridDim(M, Y, B);
-//    dim3 gridDim(H_grid, W_grid, BM);
-//    int bm_threads = BM_GRID_SIZE * BM_GRID_SIZE;
-    dim3 blockDim(TILE_WIDTH, TILE_WIDTH, 1);
-//    dim3 blockDim(TILE_WIDTH, TILE_WIDTH, bm_threads);
-//    dim3 blockDim(BLOCK_WIDTH, BLOCK_WIDTH, 1);
+    dim3 gridDim((NUM_THREADS+C*matrixWidth-1)/NUM_THREADS, B, 1);
+    dim3 blockDim(NUM_THREADS, 1, 1);
 
-    // Call the kernel
-//    forward_kernel<<<gridDim, blockDim>>>(y.dptr_, x.dptr_, k.dptr_, B, M, C, H, W, K, B_grid, M_grid);
-    long size = (C * (TILE_WIDTH) * (TILE_WIDTH) * sizeof(float));
-    forward_kernel<<<gridDim, blockDim, size>>>(y.dptr_, x.dptr_, k.dptr_, B, M, C, H, W, K, W_grid);
+    forward_kernel_unroll<<<gridDim, blockDim>>>(x.dptr_, unroll_x.dptr_, H, W, B, C, K, W_out, matrixHeight, matrixWidth);
 
-    // Use MSHADOW_CUDA_CALL to check for CUDA runtime errors.
+    dim3 gridMatrix((TILE_WIDTH+matrixWidth-1)/TILE_WIDTH, (TILE_WIDTH+M-1)/TILE_WIDTH, B);
+    dim3 blockMatrix(TILE_WIDTH, TILE_WIDTH, 1);
+
+    matrixMultiplyShared<<<gridMatrix, blockMatrix>>>(k.dptr_, unroll_x.dptr_, y.dptr_, M, matrixHeight, matrixHeight, matrixWidth, M, matrixWidth);
+
     MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
-
+    mshadow::FreeSpace(&unroll_x);
 }
 
 /* 
