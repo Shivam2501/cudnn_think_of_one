@@ -12,6 +12,23 @@ namespace op
 #define TILE_WIDTH 32
 #define NUM_THREADS 1024
 
+__global__ void matrixMultiply(float *A, float *B, float *C, int numARows,
+                               int numAColumns, int numBRows,
+                               int numBColumns, int numCRows,
+                               int numCColumns) {
+  //@@ Insert code to implement matrix multiplication here
+  float value = 0;
+  int row = blockIdx.y * blockDim.y + threadIdx.y;
+  int column = blockIdx.x * blockDim.x + threadIdx.x;
+  
+  if (row < numARows && column < numBColumns) {
+    for (int i = 0; i < numAColumns; i++) {
+      value += A[row * numAColumns + i] * B[(numBRows * numBColumns) * blockIdx.z + i * numBColumns + column];
+    }
+    C[(numCRows * numCColumns) * blockIdx.z + row * numCColumns + column] = value;
+  }
+}
+
 // From mp3
 __global__ void matrixMultiplyShared(float *A, float *B, float *C,
                                      int numARows, int numAColumns,
@@ -149,10 +166,15 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
 
     forward_kernel_unroll<<<gridDim, blockDim>>>(x.dptr_, unroll_x.dptr_, H, W, B, C, K, W_out, matrixHeight, matrixWidth);
 
+    // Using tiled matrix multiplication
     dim3 gridMatrix((TILE_WIDTH+matrixWidth-1)/TILE_WIDTH, (TILE_WIDTH+M-1)/TILE_WIDTH, B);
     dim3 blockMatrix(TILE_WIDTH, TILE_WIDTH, 1);
-
     matrixMultiplyShared<<<gridMatrix, blockMatrix>>>(k.dptr_, unroll_x.dptr_, y.dptr_, M, matrixHeight, matrixHeight, matrixWidth, M, matrixWidth);
+
+    // Using simple matrix multiplication
+    //dim3 dimBlock(16, 16, 1);
+    //dim3 dimGrid((matrixWidth + dimBlock.x - 1) / dimBlock.x, (M + dimBlock.y - 1) / dimBlock.y, B);
+    //matrixMultiply<<<dimGrid, dimBlock>>>(k.dptr_, unroll_x.dptr_, y.dptr_, M, matrixHeight, matrixHeight, matrixWidth, M, matrixWidth);
 
     MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
     mshadow::FreeSpace(&unroll_x);
