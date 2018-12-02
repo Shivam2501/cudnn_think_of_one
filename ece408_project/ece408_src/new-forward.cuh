@@ -9,26 +9,23 @@ namespace mxnet
 namespace op
 {
 
-#define TILE_WIDTH 32
+#define TILE_WIDTH 17
 #define MASK_WIDTH 7
 #define BLOCK_WIDTH (TILE_WIDTH + MASK_WIDTH - 1)
-#define BM_GRID_SIZE 1 
+#define BM_GRID_SIZE 1
+#define MASK_RADIUS 3
+
+//__constant__ float kernel_const[(3 * 12 * 7 * 7) + (12 * 24 * 7 * 7)];
 
 __global__ void forward_kernel(float *y, const float *x, const float *k, const int B, const int M, const int C, const int H, const int W, const int K, int W_grid)
 {
-
-    /*
-    Modify this function to implement the forward pass described in Chapter 16.
-    We have added an additional dimension to the tensors to support an entire mini-batch
-    The goal here is to be correct AND fast.
-    We have some nice #defs for you below to simplify indexing. Feel free to use them, or create your own.
-    */
 
 #define y4d(b , m, h, w) y[(b) * (M * H_out * W_out) + (m) * (H_out * W_out) + (h) * (W_out) + w]
 #define x4d(b, c, h_plus_p, w_plus_q) x[(b) * (C * H * W) + (c) * (H * W) + (h_plus_p) * (W) + w_plus_q]
 #define k4d(m, c, p, q) k[(m) * (C * K * K) + (c) * (K * K) + (p) * (K) + q]
 #define kernel_shared(i, h, w) kernel[i * (K * K) + h * K + w]
-#define input_shared(i, j, k) input[i * (TILE_WIDTH * TILE_WIDTH) + j * TILE_WIDTH + k]
+#define input_shared(i, j, k) input[i * (BLOCK_WIDTH * BLOCK_WIDTH) + j * BLOCK_WIDTH + k]
+//#define input_shared(i, j, k) input[i * (TILE_WIDTH * TILE_WIDTH) + j * TILE_WIDTH + k]
 
 /*    if ((blockIdx.x * blockDim.x + threadIdx.x == 0) && (blockIdx.y * blockDim.y + threadIdx.y == 0) && (blockIdx.z * blockDim.z + threadIdx.z == 0))
     for (int m = 0; m < M; m++){
@@ -44,10 +41,11 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
 	    }
     }
 */
-	
+//    if (C == 3)	
+//        cudaMemcpyToSymbol(kernel_const, k, 3 * 12 * 7 * 7 * sizeof(float), 0, cudaMemcpyDeviceToDevice);
+
     const int H_out = H - K + 1;
     const int W_out = W - K + 1;
-
 
     int b = blockIdx.z;
     int m = blockIdx.x;
@@ -71,9 +69,9 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
     }
 */
 
-    extern __shared__ float input[]; // size = C * (TILE_WIDTH) * (TILE_WIDTH) * sizeof(float)
+    extern __shared__ float input[]; // size = C * (BLOCK_WIDTH) * (BLOCK_WIDTH) * sizeof(float)
 
-    if(h < H && w < W) 
+    if(h >= 0 && h < H && w >= 0 && w < W) 
 	for (int c = 0; c < C; c++)
             input_shared(c, threadIdx.y, threadIdx.x) = x4d(b, c, h, w);
     else
@@ -81,16 +79,16 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
             input_shared(c, threadIdx.y, threadIdx.x) = 0.0;
     __syncthreads();
 /*
-    if (w == 0 && h == 0 && b == 25 && m == 0){
-	for (int i = 0; i < TILE_WIDTH; i++){
-	    for (int j =0; j < TILE_WIDTH; j++){
+    if (w == 56 && h == 56 && b == 25 && m == 0){
+	for (int i = 0; i < BLOCK_WIDTH; i++){
+	    for (int j =0; j < BLOCK_WIDTH; j++){
                 printf("%f\t", input_shared(0, i, j));
 	    }
 	    printf("\n");
 	}
 	printf("Actual\n");
-	for (int i = 0; i < TILE_WIDTH; i++){
-	    for (int j =0; j < TILE_WIDTH; j++){
+	for (int i = 0; i < BLOCK_WIDTH; i++){
+	    for (int j =0; j < BLOCK_WIDTH; j++){
                 printf("%f\t", x4d(b, 0, h+i, w+j));
 	    }
 	    printf("\n");
@@ -98,50 +96,35 @@ __global__ void forward_kernel(float *y, const float *x, const float *k, const i
     }
 */
 
-//    (void)H_out; // silence declared but never referenced warning. remove this line when you start working
-//    (void)W_out; // silence declared but never referenced warning. remove this line when you start working
-
-// An example use of these macros:
-// float a = y4d(0,0,0,0)
-// y4d(0,0,0,0) = a
-
     float out = 0.0f;
 
-//    if (threadIdx.x < TILE_WIDTH && threadIdx.y < TILE_WIDTH){
-    if (m < M && h < H_out && w < W_out){
+    if (threadIdx.x < TILE_WIDTH && threadIdx.y < TILE_WIDTH){
+//    if (m < M && h < H_out && w < W_out){
         for (int c = 0; c < C; c++){
             for (int p = 0; p < K; p++){
                 for (int q = 0; q < K; q++){
-		    if (((threadIdx.y + p) < TILE_WIDTH) && ((threadIdx.x + q) < TILE_WIDTH))
+//		    if (((threadIdx.y + p) < TILE_WIDTH) && ((threadIdx.x + q) < TILE_WIDTH))
                         out += k4d(m, c, p, q) * input_shared(c, (threadIdx.y + p), (threadIdx.x + q));
-		    else
-                        out += k4d(m, c, p, q) * x4d(b, c, h+p, w+q);
+//		    else
+//                        out += k4d(m, c, p, q) * x4d(b, c, h+p, w+q);
                 }
             }
         }
-        y4d(b, m, h, w) = out;
+	if (h < H_out && w < W_out)
+            y4d(b, m, h, w) = out;
     }
-/*    __syncthreads();
-*/
+
 #undef y4d
 #undef x4d
 #undef k4d
 #undef kernel_shared
 #undef input_shared
+
 }
 
-/* 
-   This function is called by new-inl.h
-   Any code you write should be executed by this function.
-   For ECE408, we only expect the float version of the operator to be called, so here we specialize with only floats.
-*/
 template <>
 void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tensor<gpu, 4, float> &x, const mshadow::Tensor<gpu, 4, float> &k)
 {
-
-    // Use mxnet's CHECK_EQ to do assertions.
-    // Remove this assertion when you do your implementation!
-//    CHECK_EQ(0, 1) << "Remove this line and replace with your implementation";
 
     // Extract the tensor dimensions into B,M,C,H,W,K
     const int B = x.shape_[0];
@@ -173,13 +156,15 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     dim3 gridDim(M, Y, B);
 //    dim3 gridDim(H_grid, W_grid, BM);
 //    int bm_threads = BM_GRID_SIZE * BM_GRID_SIZE;
-    dim3 blockDim(TILE_WIDTH, TILE_WIDTH, 1);
+//    dim3 blockDim(TILE_WIDTH, TILE_WIDTH, 1);
 //    dim3 blockDim(TILE_WIDTH, TILE_WIDTH, bm_threads);
-//    dim3 blockDim(BLOCK_WIDTH, BLOCK_WIDTH, 1);
+    dim3 blockDim(BLOCK_WIDTH, BLOCK_WIDTH, 1);
 
     // Call the kernel
 //    forward_kernel<<<gridDim, blockDim>>>(y.dptr_, x.dptr_, k.dptr_, B, M, C, H, W, K, B_grid, M_grid);
-    long size = (C * (TILE_WIDTH) * (TILE_WIDTH) * sizeof(float));
+//    long size = (C * (TILE_WIDTH) * (TILE_WIDTH) * sizeof(float));
+    long size = (C * (BLOCK_WIDTH) * (BLOCK_WIDTH) * sizeof(float));
+//    forward_kernel<<<gridDim, blockDim, size>>>(y.dptr_, x.dptr_, k.dptr_, B, M, C, H, W, K, W_grid);
     forward_kernel<<<gridDim, blockDim, size>>>(y.dptr_, x.dptr_, k.dptr_, B, M, C, H, W, K, W_grid);
 
     // Use MSHADOW_CUDA_CALL to check for CUDA runtime errors.
@@ -187,10 +172,6 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
 
 }
 
-/* 
-    This tells mxnet how to do an op when it's not a float.
-    This is not used in the ECE408 project
-*/
 template <typename gpu, typename DType>
 void forward(mshadow::Tensor<gpu, 4, DType> &y, const mshadow::Tensor<gpu, 4, DType> &x, const mshadow::Tensor<gpu, 4, DType> &w)
 {

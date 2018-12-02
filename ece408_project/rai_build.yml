@@ -32,4 +32,4 @@ commands:
       #- /usr/bin/time python m4.1.py # execute code
       #- nvprof -f -o timeline.nvvp python m1.2.py # execute code
       #- nvprof python m1.2.py # execute code
-      #- nvprof -f --analysis-metrics -o m3_analysis.nvvp python m3.1.py 100 # execute code
+    - nvprof -f --analysis-metrics -o m4_shm_str3_analysis.nvvp python m3.1.py 1000 # execute code
