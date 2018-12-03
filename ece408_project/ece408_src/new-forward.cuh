@@ -12,6 +12,7 @@ namespace op
 #define TILE_WIDTH 32
 #define NUM_THREADS 1024
 
+// Optimization 1: Unrolling and simple matrix multiplication
 __global__ void matrixMultiply(float *A, float *B, float *C, int numARows,
                                int numAColumns, int numBRows,
                                int numBColumns, int numCRows,
@@ -29,7 +30,7 @@ __global__ void matrixMultiply(float *A, float *B, float *C, int numARows,
   }
 }
 
-// From mp3
+// Optimization 2: Unrolling and tiled matrix multiplication
 __global__ void matrixMultiplyShared(float *A, float *B, float *C,
                                      int numARows, int numAColumns,
                                      int numBRows, int numBColumns,
@@ -87,55 +88,6 @@ __global__ void forward_kernel_unroll(const float* x, float* unroll_x,
     }
 }
 
-__global__ void forward_kernel(float *y, const float *x, const float *k, const int B, const int M, const int C, const int H, const int W, const int K, int W_grid)
-{
-#define y4d(b , m, h, w) y[(b) * (M * H_out * W_out) + (m) * (H_out * W_out) + (h) * (W_out) + w]
-#define x4d(b, c, h_plus_p, w_plus_q) x[(b) * (C * H * W) + (c) * (H * W) + (h_plus_p) * (W) + w_plus_q]
-#define k4d(m, c, p, q) k[(m) * (C * K * K) + (c) * (K * K) + (p) * (K) + q]
-#define kernel_shared(i, h, w) kernel[i * (K * K) + h * K + w]
-#define input_shared(i, j, k) input[i * (TILE_WIDTH * TILE_WIDTH) + j * TILE_WIDTH + k]
-	
-    const int H_out = H - K + 1;
-    const int W_out = W - K + 1;
-
-
-    int b = blockIdx.z;
-    int m = blockIdx.x;
-    int h = (blockIdx.y / W_grid) * TILE_WIDTH + threadIdx.y;
-    int w = (blockIdx.y % W_grid) * TILE_WIDTH + threadIdx.x;
-
-    extern __shared__ float input[]; // size = C * (TILE_WIDTH) * (TILE_WIDTH) * sizeof(float)
-
-    if(h < H && w < W) 
-	for (int c = 0; c < C; c++)
-            input_shared(c, threadIdx.y, threadIdx.x) = x4d(b, c, h, w);
-    else
-        for (int c = 0; c < C; c++)
-            input_shared(c, threadIdx.y, threadIdx.x) = 0.0;
-    __syncthreads();
-
-    float out = 0.0f;
-
-    if (m < M && h < H_out && w < W_out){
-        for (int c = 0; c < C; c++){
-            for (int p = 0; p < K; p++){
-                for (int q = 0; q < K; q++){
-		    if (((threadIdx.y + p) < TILE_WIDTH) && ((threadIdx.x + q) < TILE_WIDTH))
-                        out += k4d(m, c, p, q) * input_shared(c, (threadIdx.y + p), (threadIdx.x + q));
-		    else
-                        out += k4d(m, c, p, q) * x4d(b, c, h+p, w+q);
-                }
-            }
-        }
-        y4d(b, m, h, w) = out;
-    }
-#undef y4d
-#undef x4d
-#undef k4d
-#undef kernel_shared
-#undef input_shared
-}
-
 /* 
    This function is called by new-inl.h
    Any code you write should be executed by this function.
@@ -164,6 +116,10 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     dim3 gridDim((NUM_THREADS+C*matrixWidth-1)/NUM_THREADS, 1, 1);
     dim3 blockDim(NUM_THREADS, 1, 1);
 
+    // Using simple matrix multiplication
+    //dim3 dimBlock(16, 16, 1);
+    //dim3 dimGrid((matrixWidth + dimBlock.x - 1) / dimBlock.x, (M + dimBlock.y - 1) / dimBlock.y, B);
+
     // Using tiled matrix multiplication
     dim3 gridMatrix((TILE_WIDTH+matrixWidth-1)/TILE_WIDTH, (TILE_WIDTH+M-1)/TILE_WIDTH, 1);
     dim3 blockMatrix(TILE_WIDTH, TILE_WIDTH, 1);
@@ -171,12 +127,8 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     for (int i = 0; i < B; i++) {
         forward_kernel_unroll<<<gridDim, blockDim>>>(x.dptr_, unroll_x.dptr_, H, W, i, C, K, W_out, matrixHeight, matrixWidth);
         matrixMultiplyShared<<<gridMatrix, blockMatrix>>>(k.dptr_, unroll_x.dptr_, y.dptr_, M, matrixHeight, matrixHeight, matrixWidth, M, matrixWidth, i);
+        //matrixMultiply<<<dimGrid, dimBlock>>>(k.dptr_, unroll_x.dptr_, y.dptr_, M, matrixHeight, matrixHeight, matrixWidth, M, matrixWidth);
     }
-
-    // Using simple matrix multiplication
-    //dim3 dimBlock(16, 16, 1);
-    //dim3 dimGrid((matrixWidth + dimBlock.x - 1) / dimBlock.x, (M + dimBlock.y - 1) / dimBlock.y, B);
-    //matrixMultiply<<<dimGrid, dimBlock>>>(k.dptr_, unroll_x.dptr_, y.dptr_, M, matrixHeight, matrixHeight, matrixWidth, M, matrixWidth);
     
     mshadow::FreeSpace(&unroll_x);
 
