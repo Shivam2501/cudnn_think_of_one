@@ -87,6 +87,7 @@ __global__ void matrixMultiplySharedUsingConstantMem(float *A, float *B, float *
     int row = blockDim.y * blockIdx.y + threadIdx.y;
     int column = blockDim.x * blockIdx.x + threadIdx.x;
 
+    __shared__ float subTileM[TILE_WIDTH][TILE_WIDTH];
     __shared__ float subTileN[TILE_WIDTH][TILE_WIDTH];
     
     // if (threadIdx.x == 0 && threadIdx.y == 0 && blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0) {
@@ -98,6 +99,11 @@ __global__ void matrixMultiplySharedUsingConstantMem(float *A, float *B, float *
     // }
 
     for (int i = 0; i < ceil(numAColumns, TILE_WIDTH); i++) {
+        if (i * TILE_WIDTH + threadIdx.x < numAColumns && row < numARows)
+            subTileM[threadIdx.y][threadIdx.x] = weights[row * numAColumns + i * TILE_WIDTH + threadIdx.x];
+        else
+            subTileM[threadIdx.y][threadIdx.x] = 0;
+
         if (i * TILE_WIDTH + threadIdx.y < numBRows && column < numBColumns)
             subTileN[threadIdx.y][threadIdx.x] = B[(numBRows * numBColumns) * blockIdx.z + numBColumns * (i * TILE_WIDTH + threadIdx.y) + column];
         else
@@ -107,7 +113,8 @@ __global__ void matrixMultiplySharedUsingConstantMem(float *A, float *B, float *
 
         if (row < numCRows && column < numCColumns) {
             for (int j = 0; j < TILE_WIDTH; j++) {
-                value += weights[(row) * (numInputChannels*CONST_WEIGHT_DIM*CONST_WEIGHT_DIM) + (i * TILE_WIDTH + j)] * subTileN[j][threadIdx.x];
+                //value += weights[(row) * (numInputChannels*CONST_WEIGHT_DIM*CONST_WEIGHT_DIM) + (i * TILE_WIDTH + j)] * subTileN[j][threadIdx.x];
+                value += subTileM[threadIdx.y][j] * subTileN[j][threadIdx.x];
             }
         }
 
