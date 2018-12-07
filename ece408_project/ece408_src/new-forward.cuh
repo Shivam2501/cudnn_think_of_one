@@ -15,12 +15,16 @@ namespace op
 
 #define ceil(num,denom) ((denom + num - 1) / denom)
 
+#define CONST_NUM_OUTPUT_CHANNELS 24
+#define CONST_NUM_INPUT_CHANNELS 12
+#define CONST_WEIGHT_DIM 7
+__constant__ float weights[CONST_NUM_OUTPUT_CHANNELS * CONST_NUM_INPUT_CHANNELS * CONST_WEIGHT_DIM * CONST_WEIGHT_DIM];
+
 // Optimization 1: Unrolling and simple matrix multiplication
 __global__ void matrixMultiply(float *A, float *B, float *C, int numARows,
                                int numAColumns, int numBRows,
                                int numBColumns, int numCRows,
                                int numCColumns) {
-  //@@ Insert code to implement matrix multiplication here
   float value = 0;
   int row = blockIdx.y * blockDim.y + threadIdx.y;
   int column = blockIdx.x * blockDim.x + threadIdx.x;
@@ -46,14 +50,14 @@ __global__ void matrixMultiplyShared(float *A, float *B, float *C,
     __shared__ float subTileM[TILE_WIDTH][TILE_WIDTH];
     __shared__ float subTileN[TILE_WIDTH][TILE_WIDTH];
 
-    for (int i = 0; i < (TILE_WIDTH+numAColumns-1)/TILE_WIDTH; i++) {
-        if (i*TILE_WIDTH+threadIdx.x<numAColumns && row<numARows)
-            subTileM[threadIdx.y][threadIdx.x] = A[row*numAColumns + i*TILE_WIDTH +threadIdx.x];
+    for (int i = 0; i < ceil(numAColumns, TILE_WIDTH); i++) {
+        if (i * TILE_WIDTH + threadIdx.x < numAColumns && row < numARows)
+            subTileM[threadIdx.y][threadIdx.x] = A[row * numAColumns + i * TILE_WIDTH + threadIdx.x];
         else
             subTileM[threadIdx.y][threadIdx.x] = 0;
 
-        if (i*TILE_WIDTH+threadIdx.y<numBRows && column<numBColumns)
-            subTileN[threadIdx.y][threadIdx.x] = B[(numBRows * numBColumns) * blockIdx.z + numBColumns * (i*TILE_WIDTH+threadIdx.y) + column];
+        if (i * TILE_WIDTH + threadIdx.y < numBRows && column < numBColumns)
+            subTileN[threadIdx.y][threadIdx.x] = B[(numBRows * numBColumns) * blockIdx.z + numBColumns * (i * TILE_WIDTH + threadIdx.y) + column];
         else
             subTileN[threadIdx.y][threadIdx.x] = 0;
 
@@ -62,6 +66,52 @@ __global__ void matrixMultiplyShared(float *A, float *B, float *C,
         if (row < numCRows && column < numCColumns) {
             for (int j = 0; j < TILE_WIDTH; j++)
                 value += subTileM[threadIdx.y][j] * subTileN[j][threadIdx.x];
+        }
+
+        __syncthreads();
+    }
+
+    if (batchSize * UNROLL_BATCH_SIZE + blockIdx.z < numImages && row < numCRows && column < numCColumns)
+        C[(numCRows * numCColumns) * (batchSize * UNROLL_BATCH_SIZE + blockIdx.z) + numCColumns * row + column] = value;
+}
+
+__global__ void matrixMultiplySharedUsingConstantMem(float *A, float *B, float *C,
+                                     int numARows, int numAColumns,
+                                     int numBRows, int numBColumns,
+                                     int numCRows, int numCColumns, 
+                                     int numImages, int batchSize, int numInputChannels) {
+
+    //#define wd(m, c, h,w) weights[(m) * (numInputChannels*CONST_WEIGHT_DIM*CONST_WEIGHT_DIM) + (c) * (CONST_WEIGHT_DIM*CONST_WEIGHT_DIM) + (h) * (CONST_WEIGHT_DIM) + w]
+
+    float value = 0;
+    int row = blockDim.y * blockIdx.y + threadIdx.y;
+    int column = blockDim.x * blockIdx.x + threadIdx.x;
+
+    __shared__ float subTileN[TILE_WIDTH][TILE_WIDTH];
+    
+    // if (threadIdx.x == 0 && threadIdx.y == 0 && blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0) {
+    //     for (int i = 0; i < 50; i++) {
+    //         int index = i / (CONST_WEIGHT_DIM * CONST_WEIGHT_DIM);
+    //         int index2 = i % (CONST_WEIGHT_DIM * CONST_WEIGHT_DIM);
+    //         printf("%lf", weights[row][index][index2 / CONST_WEIGHT_DIM][index2 % CONST_WEIGHT_DIM]);
+    //     }
+    // }
+
+    for (int i = 0; i < ceil(numAColumns, TILE_WIDTH); i++) {
+        if (i * TILE_WIDTH + threadIdx.y < numBRows && column < numBColumns)
+            subTileN[threadIdx.y][threadIdx.x] = B[(numBRows * numBColumns) * blockIdx.z + numBColumns * (i * TILE_WIDTH + threadIdx.y) + column];
+        else
+            subTileN[threadIdx.y][threadIdx.x] = 0;
+
+        __syncthreads();
+
+        if (row < numCRows && column < numCColumns) {
+            for (int j = 0; j < TILE_WIDTH; j++) {
+                int channel = (i * TILE_WIDTH + j) / (CONST_WEIGHT_DIM * CONST_WEIGHT_DIM);
+                int index = (i * TILE_WIDTH + j) % (CONST_WEIGHT_DIM * CONST_WEIGHT_DIM);
+                value += weights[(row) * (numInputChannels*CONST_WEIGHT_DIM*CONST_WEIGHT_DIM) + (channel) * (CONST_WEIGHT_DIM*CONST_WEIGHT_DIM) + (index / CONST_WEIGHT_DIM) * (CONST_WEIGHT_DIM) + (index % CONST_WEIGHT_DIM)] * subTileN[j][threadIdx.x];
+                //value += wd(row, channel, index / CONST_WEIGHT_DIM, index % CONST_WEIGHT_DIM ) * subTileN[j][threadIdx.x];
+            }
         }
 
         __syncthreads();
@@ -117,6 +167,9 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     const int unrolledMatrixWidth = outputImageHeight * outputImageWidth;
     const int unrollMatrixHeight = numInputChannels * weightDim * weightDim;
 
+    fprintf(stdout, "Weight Matrix: %d, %d, %d\n", numOutputChannels, numInputChannels, weightDim);
+    cudaMemcpyToSymbol(weights, k.dptr_, numOutputChannels * numInputChannels * weightDim * weightDim * sizeof(float));
+
     mshadow::Tensor<gpu, 3, float> unroll_x;
     unroll_x.shape_ = mshadow::Shape3(unrolledMatrixWidth, unrollMatrixHeight, UNROLL_BATCH_SIZE);
     mshadow::AllocSpace(&unroll_x);
@@ -136,10 +189,9 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
         forward_kernel_unroll<<<unrollGridDim, unrollBlockDim>>>(x.dptr_, unroll_x.dptr_, inputImageHeight, inputImageWidth, 
                                                                  numImages, numInputChannels, weightDim, outputImageWidth, 
                                                                  unrollMatrixHeight, unrolledMatrixWidth, batch);
-
-        matrixMultiplyShared<<<matrixGridDim, matrixBlockDim>>>(k.dptr_, unroll_x.dptr_, y.dptr_, numOutputChannels, 
-                                                                unrollMatrixHeight, unrollMatrixHeight, unrolledMatrixWidth, 
-                                                                numOutputChannels, unrolledMatrixWidth, numImages, batch);
+        matrixMultiplySharedUsingConstantMem<<<matrixGridDim, matrixBlockDim>>>(k.dptr_, unroll_x.dptr_, y.dptr_, numOutputChannels, 
+                                                                                unrollMatrixHeight, unrollMatrixHeight, unrolledMatrixWidth, 
+                                                                                numOutputChannels, unrolledMatrixWidth, numImages, batch, numInputChannels);
         //matrixMultiply<<<dimGrid, dimBlock>>>(k.dptr_, unroll_x.dptr_, y.dptr_, M, matrixHeight, matrixHeight, unrolledMatrixWidth, M, unrolledMatrixWidth);
     }
     
