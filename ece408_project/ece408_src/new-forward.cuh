@@ -107,10 +107,7 @@ __global__ void matrixMultiplySharedUsingConstantMem(float *A, float *B, float *
 
         if (row < numCRows && column < numCColumns) {
             for (int j = 0; j < TILE_WIDTH; j++) {
-                int channel = (i * TILE_WIDTH + j) / (CONST_WEIGHT_DIM * CONST_WEIGHT_DIM);
-                int index = (i * TILE_WIDTH + j) % (CONST_WEIGHT_DIM * CONST_WEIGHT_DIM);
-                value += weights[(row) * (numInputChannels*CONST_WEIGHT_DIM*CONST_WEIGHT_DIM) + (channel) * (CONST_WEIGHT_DIM*CONST_WEIGHT_DIM) + (index / CONST_WEIGHT_DIM) * (CONST_WEIGHT_DIM) + (index % CONST_WEIGHT_DIM)] * subTileN[j][threadIdx.x];
-                //value += wd(row, channel, index / CONST_WEIGHT_DIM, index % CONST_WEIGHT_DIM ) * subTileN[j][threadIdx.x];
+                value += weights[(row) * (numInputChannels*CONST_WEIGHT_DIM*CONST_WEIGHT_DIM) + (i * TILE_WIDTH + j)] * subTileN[j][threadIdx.x];
             }
         }
 
