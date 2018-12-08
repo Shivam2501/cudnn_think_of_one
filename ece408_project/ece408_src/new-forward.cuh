@@ -19,6 +19,7 @@ namespace op
 #define CONST_NUM_OUTPUT_CHANNELS 24
 #define CONST_NUM_INPUT_CHANNELS 12
 #define CONST_WEIGHT_DIM 7
+
 __constant__ float weights[CONST_NUM_OUTPUT_CHANNELS * CONST_NUM_INPUT_CHANNELS * CONST_WEIGHT_DIM * CONST_WEIGHT_DIM];
 
 // Optimization 1: Unrolling and simple matrix multiplication
@@ -132,29 +133,31 @@ __global__ void matrixMultiplySharedUsingConstantMem(float *A, float *B, float *
 }
 
 // logical image unrolling
-__global__ void forward_kernel_logical_unroll(float *x, float *w, float *y, const int numImages, const int numInputChannels,
+__global__ void forward_kernel_logical_unroll(const float* __restrict__ x, const float* __restrict__ w, float* __restrict__ y, const int numImages, const int numInputChannels,
                                               const int inputImageHeight, const int inputImageWidth, const int weightDim,
                                               const int numOutputChannels, const int outputMatrixWidth, const int outputImageWidth) {
+    #define x4d(b,m,h,w) x[(b) * (numInputChannels * inputImageHeight * inputImageWidth) + (m) * (inputImageHeight * inputImageWidth) + (h) * (inputImageWidth) + w]
+
     float value = 0;
-    int row = blockDim.y * blockIdx.y + threadIdx.y;
-    int column = blockDim.x * blockIdx.x + threadIdx.x;
+    const unsigned int row = blockDim.y * blockIdx.y + threadIdx.y;
+    const unsigned int column = blockDim.x * blockIdx.x + threadIdx.x;
 
     __shared__ float subTileM[TILE_WIDTH][TILE_WIDTH];
     __shared__ float subTileN[TILE_WIDTH][TILE_WIDTH];
 
-    int weightMatrixColumns = numInputChannels * weightDim * weightDim;
-    int imageMatrixWidth = numInputChannels * inputImageHeight * inputImageWidth;
+    const unsigned int weightMatrixColumns = numInputChannels * weightDim * weightDim;
 
-    int outputy = (blockDim.x * blockIdx.x + threadIdx.y) / outputImageWidth;
-    int outputx = (blockDim.x * blockIdx.x + threadIdx.y) % outputImageWidth;
+    const unsigned int columnStartIndex = blockDim.x * blockIdx.x + threadIdx.y;
+    const unsigned int outputy = columnStartIndex / outputImageWidth;
+    const unsigned int outputx = columnStartIndex % outputImageWidth;
 
-    for (int i = 0; i < ceil(weightMatrixColumns, TILE_WIDTH); i++) { 
+    for (unsigned int i = 0; i < ceil(weightMatrixColumns, TILE_WIDTH); i++) { 
         // Loads weights into shared memory
         int tilex = i * TILE_WIDTH + threadIdx.x;
         if (tilex < weightMatrixColumns && row < numOutputChannels)
             subTileM[threadIdx.y][threadIdx.x] = w[(row * weightMatrixColumns) + tilex];
         else
-            subTileM[threadIdx.y][threadIdx.x] = 0;
+            subTileM[threadIdx.y][threadIdx.x] = 0.0f;
 
         // Loads input image into shared memory
         int channel = tilex / (weightDim * weightDim);
@@ -163,17 +166,18 @@ __global__ void forward_kernel_logical_unroll(float *x, float *w, float *y, cons
         int w = (channelIdx % weightDim) + outputx;
 
         if (tilex < weightMatrixColumns && channel < numInputChannels && h < inputImageHeight && w < inputImageWidth)
-            subTileN[threadIdx.x][threadIdx.y] = x[(imageMatrixWidth * blockIdx.z) + (inputImageHeight * inputImageWidth * channel) + (inputImageWidth * h) + w];
+            subTileN[threadIdx.x][threadIdx.y] = x4d(blockIdx.z, channel, h, w);
         else
-            subTileN[threadIdx.x][threadIdx.y] = 0;
+            subTileN[threadIdx.x][threadIdx.y] = 0.0f;
 
         __syncthreads();
 
         if (row < numOutputChannels && column < outputMatrixWidth)
-            for (int j = 0; j < TILE_WIDTH; j++)
+            for (unsigned int j = 0; j < TILE_WIDTH; j++) {
                 value += subTileM[threadIdx.y][j] * subTileN[j][threadIdx.x];
+            }
 
-        __syncthreads(); 
+        __syncthreads();
     }
 
     if (row < numOutputChannels && column < outputMatrixWidth) {
@@ -204,6 +208,9 @@ __global__ void forward_kernel_unroll(const float* x, float* unroll_x,
             }
         }
     }
+
+    #undef y4d
+    #undef x4d
 }
 
 /* 
@@ -215,28 +222,28 @@ template <>
 void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tensor<gpu, 4, float> &x, const mshadow::Tensor<gpu, 4, float> &k)
 {
     // Extract the tensor dimensions into B,M,C,H,W,K
-    const int numImages = x.shape_[0];
-    const int numOutputChannels = k.shape_[0];
-    const int numInputChannels = k.shape_[1];
-    const int inputImageHeight = x.shape_[2];
-    const int inputImageWidth = x.shape_[3];
-    const int weightDim = k.shape_[3];
+    const unsigned int numImages = x.shape_[0];
+    const unsigned int numOutputChannels = k.shape_[0];
+    const unsigned int numInputChannels = k.shape_[1];
+    const unsigned int inputImageHeight = x.shape_[2];
+    const unsigned int inputImageWidth = x.shape_[3];
+    const unsigned int weightDim = k.shape_[3];
 
-    const int outputImageWidth = inputImageWidth - weightDim + 1;
-    const int outputImageHeight = inputImageHeight - weightDim + 1;
-    const int unrolledMatrixWidth = outputImageHeight * outputImageWidth;
-    const int unrollMatrixHeight = numInputChannels * weightDim * weightDim;
+    const unsigned int outputImageWidth = inputImageWidth - weightDim + 1;
+    const unsigned int outputImageHeight = inputImageHeight - weightDim + 1;
+    const unsigned int unrolledMatrixWidth = outputImageHeight * outputImageWidth;
+    // const unsigned int unrollMatrixHeight = numInputChannels * weightDim * weightDim;
 
     fprintf(stdout, "Weight Matrix: %d, %d, %d\n", numOutputChannels, numInputChannels, weightDim);
     fprintf(stdout, "Input Image Dim: %d, %d\n", inputImageHeight, inputImageWidth);
+
+    // cudaMemcpyToSymbol(weights, k.dptr_, numOutputChannels * numInputChannels * weightDim * weightDim * sizeof(float));
     
     dim3 logicalUnrollGridDim(ceil(unrolledMatrixWidth, TILE_WIDTH), ceil(numOutputChannels, TILE_WIDTH), numImages);
     dim3 logicalUnrollBlockDim(TILE_WIDTH, TILE_WIDTH, 1);
     forward_kernel_logical_unroll<<<logicalUnrollGridDim, logicalUnrollBlockDim>>>(x.dptr_, k.dptr_, y.dptr_, numImages, numInputChannels,
                                                                                    inputImageHeight, inputImageWidth, weightDim, numOutputChannels,
                                                                                    unrolledMatrixWidth, outputImageWidth);
-
-    // cudaMemcpyToSymbol(weights, k.dptr_, numOutputChannels * numInputChannels * weightDim * weightDim * sizeof(float));
 
     // mshadow::Tensor<gpu, 3, float> unroll_x;
     // unroll_x.shape_ = mshadow::Shape3(unrolledMatrixWidth, unrollMatrixHeight, UNROLL_BATCH_SIZE);
