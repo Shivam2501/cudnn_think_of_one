@@ -145,10 +145,10 @@ __global__ void forward_kernel_logical_unroll(float *x, float *w, float *y, cons
     int weightMatrixColumns = numInputChannels * weightDim * weightDim;
     int imageMatrixWidth = numInputChannels * inputImageHeight * inputImageWidth;
 
-    int outputy = column / outputImageWidth;
-    int outputx = column % outputImageWidth;
+    int outputy = (blockDim.x * blockIdx.x + threadIdx.y) / outputImageWidth;
+    int outputx = (blockDim.x * blockIdx.x + threadIdx.y) % outputImageWidth;
 
-    for (int i = 0; i < ceil(weightMatrixColumns, TILE_WIDTH); i++) {
+    for (int i = 0; i < ceil(weightMatrixColumns, TILE_WIDTH); i++) { 
         // Loads weights into shared memory
         int tilex = i * TILE_WIDTH + threadIdx.x;
         if (tilex < weightMatrixColumns && row < numOutputChannels)
@@ -163,9 +163,9 @@ __global__ void forward_kernel_logical_unroll(float *x, float *w, float *y, cons
         int w = (channelIdx % weightDim) + outputx;
 
         if (tilex < weightMatrixColumns && channel < numInputChannels && h < inputImageHeight && w < inputImageWidth)
-            subTileN[threadIdx.y][threadIdx.x] = x[(imageMatrixWidth * blockIdx.z) + (inputImageHeight * inputImageWidth * channel) + (inputImageWidth * h) + w];
+            subTileN[threadIdx.x][threadIdx.y] = x[(imageMatrixWidth * blockIdx.z) + (inputImageHeight * inputImageWidth * channel) + (inputImageWidth * h) + w];
         else
-            subTileN[threadIdx.y][threadIdx.x] = 0;
+            subTileN[threadIdx.x][threadIdx.y] = 0;
 
         __syncthreads();
 
@@ -228,7 +228,8 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     const int unrollMatrixHeight = numInputChannels * weightDim * weightDim;
 
     fprintf(stdout, "Weight Matrix: %d, %d, %d\n", numOutputChannels, numInputChannels, weightDim);
-
+    fprintf(stdout, "Input Image Dim: %d, %d\n", inputImageHeight, inputImageWidth);
+    
     dim3 logicalUnrollGridDim(ceil(unrolledMatrixWidth, TILE_WIDTH), ceil(numOutputChannels, TILE_WIDTH), numImages);
     dim3 logicalUnrollBlockDim(TILE_WIDTH, TILE_WIDTH, 1);
     forward_kernel_logical_unroll<<<logicalUnrollGridDim, logicalUnrollBlockDim>>>(x.dptr_, k.dptr_, y.dptr_, numImages, numInputChannels,
