@@ -34,9 +34,9 @@ commands:
     
     - /usr/bin/time python m3.1.py 1000 # execute code
     #- nvprof python m3.1.py 10000
-    #- nvprof -f -o timeline.nvvp python m3.1.py 1000 # execute code
-    #- nvprof --analysis-metrics -o forward1_analysis.nvprof python m3.1.py 1000
-    #- nvprof --analysis-metrics -o forward2_analysis.nvprof python m3.1.py 1000
+    #- nvprof -f -o timeline.nvvp python m4.1.py 1000 # execute code
+    #- nvprof --analysis-metrics -o forward1_analysis.nvprof python m4.1.py 1000
+    #- nvprof --analysis-metrics -o forward2_analysis.nvprof python m4.1.py 1000
     
     - /usr/bin/time python m3.1.py 10000 # execute code
       #- /usr/bin/time python m4.1.py # execute code

@@ -3,13 +3,14 @@
 #define MXNET_OPERATOR_NEW_FORWARD_CUH_
 
 #include <mxnet/base.h>
+//#include <cuda_fp16.h>
 
 namespace mxnet
 {
 namespace op
 {
 
-#define TILE_WIDTH 32
+#define TILE_WIDTH 16
 #define NUM_THREADS 1024
 #define UNROLL_BATCH_SIZE 1000
 #define NUM_COARSENING 4
@@ -138,6 +139,7 @@ __global__ void forward_kernel_logical_unroll(const float* __restrict__ x, const
                                               const int numOutputChannels, const int outputMatrixWidth, const int outputImageWidth) {
     #define x4d(b,m,h,w) x[(b) * (numInputChannels * inputImageHeight * inputImageWidth) + (m) * (inputImageHeight * inputImageWidth) + (h) * (inputImageWidth) + w]
 
+    //half value = 0;
     float value = 0;
     const unsigned int row = blockDim.y * blockIdx.y + threadIdx.y;
     const unsigned int column = blockDim.x * blockIdx.x + threadIdx.x;
@@ -174,6 +176,9 @@ __global__ void forward_kernel_logical_unroll(const float* __restrict__ x, const
 
         if (row < numOutputChannels && column < outputMatrixWidth)
             for (unsigned int j = 0; j < TILE_WIDTH; j++) {
+                // half subM = __float2half(subTileM[threadIdx.y][j]);
+                // half subN = __float2half(subTileN[j][threadIdx.x]);
+                // value += __hmul(subM, subN);
                 value += subTileM[threadIdx.y][j] * subTileN[j][threadIdx.x];
             }
 
@@ -182,6 +187,7 @@ __global__ void forward_kernel_logical_unroll(const float* __restrict__ x, const
 
     if (row < numOutputChannels && column < outputMatrixWidth) {
         y[(numOutputChannels * outputMatrixWidth * blockIdx.z) + (outputMatrixWidth * row) + column] = value;
+        //y[(numOutputChannels * outputMatrixWidth * blockIdx.z) + (outputMatrixWidth * row) + column] = __half2float(value);
     }
 }
 
