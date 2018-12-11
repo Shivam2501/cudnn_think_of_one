@@ -10,7 +10,7 @@ namespace mxnet
 namespace op
 {
 
-#define TILE_WIDTH 16
+#define TILE_WIDTH 22
 #define NUM_THREADS 1024
 #define UNROLL_BATCH_SIZE 1000
 #define NUM_COARSENING 4
@@ -215,7 +215,7 @@ __global__ void forward_kernel_logical_unroll_ayush(const float* __restrict__ x,
     if (threadIdx.y < 8)
         for (unsigned int i = 0; i < ceil(inputImageWidth, TILE_WIDTH); i++) { 
             if (i * TILE_WIDTH + threadIdx.x < inputImageWidth)
-                inputShared[threadIdx.y][i * TILE_WIDTH + threadIdx.x] = x4d(blockIdx.z, 0, (blockIdx.x * blockDim.x / outputImageWidth) + threadIdx.y, i * TILE_WIDTH + threadIdx.x);
+                inputShared[threadIdx.z][threadIdx.y][i * TILE_WIDTH + threadIdx.x] = x4d(blockIdx.z, threadIdx.z, (blockIdx.x * blockDim.x / outputImageWidth) + threadIdx.y, i * TILE_WIDTH + threadIdx.x);
         }
     __syncthreads();
 
@@ -235,7 +235,7 @@ __global__ void forward_kernel_logical_unroll_ayush(const float* __restrict__ x,
         int h = (channelIdx / weightDim);
         int w = (channelIdx % weightDim) + outputx;
 
-        if (tilex < weightMatrixColumns && channel < numInputChannels && h < inputImageHeight && w < inputImageWidth)
+        if (tilex < weightMatrixColumns && channel < numInputChannels && h + outputy < inputImageHeight && w < inputImageWidth)
             subTileN[threadIdx.x][threadIdx.y] = inputShared[h][w];
             //subTileN[threadIdx.x][threadIdx.y] = x4d(blockIdx.z, channel, h, w);
         else
@@ -292,7 +292,7 @@ __global__ void forward_kernel_logical_unroll_ayush(const float* __restrict__ x,
     }
 
     if (row < numOutputChannels && column < outputMatrixWidth) {
-        y[(numOutputChannels * outputMatrixWidth * blockIdx.z) + (outputMatrixWidth * row) + column] = value;
+        atomicAdd(&y[(numOutputChannels * outputMatrixWidth * blockIdx.z) + (outputMatrixWidth * row) + column], value);
         //y[(numOutputChannels * outputMatrixWidth * blockIdx.z) + (outputMatrixWidth * row) + column] = __half2float(value);
     }
 }
