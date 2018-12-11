@@ -298,6 +298,7 @@ __global__ void forward_kernel_logical_l1(const float* __restrict__ x, const flo
     __syncthreads();
 
     if (row < numOutputChannels && column < outputMatrixWidth) {
+        #pragma unroll
         for (unsigned int i = 0; i < weightMatrixColumns; i++) {
             //value += weights[(row*CONST_WEIGHT_DIM*CONST_WEIGHT_DIM) + i] * subTileN[i][threadIdx.x];
             value += subTileM[row][i] * subTileN[i][threadIdx.x];
@@ -329,6 +330,7 @@ __global__ void forward_kernel_logical_l2(const float* __restrict__ x, const flo
     const unsigned int matrixRow = threadIndex / weightMatrixColumns;
     const unsigned int matrixCol = threadIndex % weightMatrixColumns;
 
+    #pragma unroll
     for (unsigned int channelNum = 0; channelNum < numInputChannels; channelNum++) {
         if (threadIndex < weightDim*inputImageWidth) {
             float load_val = x[(blockIdx.z * numInputChannels * inputImageHeight * inputImageWidth) + (channelNum * inputImageHeight * inputImageWidth) + ( (inputImageRow + blockIdx.x) * inputImageWidth) + inputImageCol];
@@ -349,6 +351,7 @@ __global__ void forward_kernel_logical_l2(const float* __restrict__ x, const flo
         }
         __syncthreads();
 
+        #pragma unroll
         for (unsigned int i = 0; i < weightMatrixColumns; i++) {
             //value += weights[(row*numInputChannels*CONST_WEIGHT_DIM*CONST_WEIGHT_DIM) + (channelNum*CONST_WEIGHT_DIM*CONST_WEIGHT_DIM) + i] * subTileN[i][threadIdx.x];
             value += subTileM[row][i] * subTileN[i][threadIdx.x];
