@@ -28,6 +28,8 @@ namespace op
 
 __constant__ float weights[CONST_NUM_OUTPUT_CHANNELS * CONST_NUM_INPUT_CHANNELS * CONST_WEIGHT_DIM * CONST_WEIGHT_DIM];
 
+texture<float, 2, cudaReadModeElementType> texDesc;
+
 // Optimization 1: Unrolling and simple matrix multiplication
 __global__ void matrixMultiply(float *A, float *B, float *C, int numARows,
                                int numAColumns, int numBRows,
@@ -255,9 +257,9 @@ __global__ void forward_kernel_logical_unroll_l2(const float* __restrict__ x, co
 }
 
 // logical image unrolling for layer 1
-__global__ void forward_kernel_logical_l1(const float* __restrict__ x, const float* __restrict__ w, float* __restrict__ y, const int numImages, const int numInputChannels,
-                                              const int inputImageHeight, const int inputImageWidth, const int weightDim,
-                                              const int numOutputChannels, const int outputMatrixWidth, const int outputImageWidth) {
+__global__ void forward_kernel_logical_l1(const float* __restrict__ x, const float* __restrict__ w, float* __restrict__ y, const int numImages, 
+                                          const int numInputChannels, const int inputImageHeight, const int inputImageWidth, const int weightDim,
+                                          const int numOutputChannels, const int outputMatrixWidth, const int outputImageWidth) {
     #define x4d(b,m,h,w) x[(b) * (numInputChannels * inputImageHeight * inputImageWidth) + (m) * (inputImageHeight * inputImageWidth) + (h) * (inputImageWidth) + w]
 
     float value = 0;
@@ -302,6 +304,7 @@ __global__ void forward_kernel_logical_l1(const float* __restrict__ x, const flo
         for (unsigned int i = 0; i < weightMatrixColumns; i++) {
             //value += weights[(row*CONST_WEIGHT_DIM*CONST_WEIGHT_DIM) + i] * subTileN[i][threadIdx.x];
             value += subTileM[row][i] * subTileN[i][threadIdx.x];
+            //value += tex2D(texDesc, row, i) * subTileN[i][threadIdx.x];
         }
         y[(numOutputChannels * outputMatrixWidth * blockIdx.z) + (outputMatrixWidth * row) + column] = value;
     }
@@ -411,10 +414,28 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     const unsigned int outputImageWidth = inputImageWidth - weightDim + 1;
     const unsigned int outputImageHeight = inputImageHeight - weightDim + 1;
     const unsigned int unrolledMatrixWidth = outputImageHeight * outputImageWidth;
+
+    // Allocate CUDA array in device memory
+    cudaChannelFormatDesc channelDesc =
+               cudaCreateChannelDesc(32, 0, 0, 0, cudaChannelFormatKindFloat);
+
+    cudaArray* cuArray;
+    cudaMallocArray(&cuArray, &channelDesc, numInputChannels * weightDim * weightDim, numOutputChannels, cudaArraySurfaceLoadStore);
+    cudaMemcpyToArray(cuArray, 0, 0, k.dptr_, numOutputChannels * numInputChannels * weightDim * weightDim * sizeof(float), cudaMemcpyHostToDevice);
+
+    // Specify texture object parameters
+    texDesc.addressMode[0]   = cudaAddressModeWrap;
+    texDesc.addressMode[1]   = cudaAddressModeWrap;
+    texDesc.filterMode       = cudaFilterModeLinear;
+    texDesc.normalized       = true;
+
+    // Create texture object
+    cudaBindTextureToArray(texDesc, cuArray, channelDesc);
+
     // const unsigned int unrollMatrixHeight = numInputChannels * weightDim * weightDim;
 
     //fprintf(stdout, "Weight Matrix: %d, %d, %d\n", numOutputChannels, numInputChannels, weightDim);
-    //fprintf(stdout, "Input Image Dim: %d, %d\n", inputImageHeight, inputImageWidth);
+    //fprintf(stdout, "Input Image Dim: %d, %d\n", inputImageHeight, inputImagekernelWidth);
 
     //cudaMemcpyToSymbol(weights, k.dptr_, numOutputChannels * numInputChannels * weightDim * weightDim * sizeof(float));
 
@@ -473,6 +494,7 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     // }
     
     // mshadow::FreeSpace(&unroll_x);
+    cudaFreeArray(cuArray);
     MSHADOW_CUDA_CALL(cudaDeviceSynchronize());
 }
 
