@@ -32,14 +32,7 @@ __global__ void forward_kernel_logical_l2(const float* __restrict__ x, const flo
     const unsigned int column = blockDim.x * blockIdx.x + threadIdx.x;
 
     __shared__ float subTileM[24][49];
-    __shared__ float subTileN[49][27];
-    __shared__ float subTileO[49][27];
-    __shared__ float subTileP[49][27];
-    __shared__ float subTileQ[49][27];
-    __shared__ float subTileR[49][27];
-    __shared__ float subTileS[49][27];
-    __shared__ float subTileT[49][27];
-    __shared__ float subTileU[49][27];
+    __shared__ float subTileN[8][49][27];
 
     // Loads data from input image
     const unsigned int threadIndex = (threadIdx.y * blockDim.x) + threadIdx.x;
@@ -63,14 +56,14 @@ __global__ void forward_kernel_logical_l2(const float* __restrict__ x, const flo
             int outputCol = inputImageCol;
             for (unsigned int i = 0; i < 7; i++) {
                 if (outputCol >= 0 && outputCol < 27) {
-                    subTileN[outputRow][outputCol] = load_val_N;
-                    subTileO[outputRow][outputCol] = load_val_O;
-                    subTileP[outputRow][outputCol] = load_val_P;
-                    subTileQ[outputRow][outputCol] = load_val_Q;
-                    subTileR[outputRow][outputCol] = load_val_R;
-                    subTileS[outputRow][outputCol] = load_val_S;
-                    subTileT[outputRow][outputCol] = load_val_T;
-                    subTileU[outputRow][outputCol] = load_val_U;
+                    subTileN[0][outputRow][outputCol] = load_val_N;
+                    subTileN[1][outputRow][outputCol] = load_val_O;
+                    subTileN[2][outputRow][outputCol] = load_val_P;
+                    subTileN[3][outputRow][outputCol] = load_val_Q;
+                    subTileN[4][outputRow][outputCol] = load_val_R;
+                    subTileN[5][outputRow][outputCol] = load_val_S;
+                    subTileN[6][outputRow][outputCol] = load_val_T;
+                    subTileN[7][outputRow][outputCol] = load_val_U;
                 }
                 outputCol -= 1;
                 outputRow += 1;
@@ -87,14 +80,14 @@ __global__ void forward_kernel_logical_l2(const float* __restrict__ x, const flo
 
         #pragma unroll
         for (unsigned int i = 0; i < 49; i++) {
-            value_N += subTileM[threadIdx.y][i] * subTileN[i][threadIdx.x];
-            value_O += subTileM[threadIdx.y][i] * subTileO[i][threadIdx.x];
-            value_P += subTileM[threadIdx.y][i] * subTileP[i][threadIdx.x];
-            value_Q += subTileM[threadIdx.y][i] * subTileQ[i][threadIdx.x];
-            value_R += subTileM[threadIdx.y][i] * subTileR[i][threadIdx.x];
-            value_S += subTileM[threadIdx.y][i] * subTileS[i][threadIdx.x];
-            value_T += subTileM[threadIdx.y][i] * subTileT[i][threadIdx.x];
-            value_U += subTileM[threadIdx.y][i] * subTileU[i][threadIdx.x];
+            value_N += subTileM[threadIdx.y][i] * subTileN[0][i][threadIdx.x];
+            value_O += subTileM[threadIdx.y][i] * subTileN[1][i][threadIdx.x];
+            value_P += subTileM[threadIdx.y][i] * subTileN[2][i][threadIdx.x];
+            value_Q += subTileM[threadIdx.y][i] * subTileN[3][i][threadIdx.x];
+            value_R += subTileM[threadIdx.y][i] * subTileN[4][i][threadIdx.x];
+            value_S += subTileM[threadIdx.y][i] * subTileN[5][i][threadIdx.x];
+            value_T += subTileM[threadIdx.y][i] * subTileN[6][i][threadIdx.x];
+            value_U += subTileM[threadIdx.y][i] * subTileN[7][i][threadIdx.x];
         }
         __syncthreads();
     }
