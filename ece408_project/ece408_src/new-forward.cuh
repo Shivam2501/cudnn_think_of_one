@@ -29,7 +29,6 @@ __global__ void forward_kernel_logical_l1(const float* __restrict__ x, const flo
     float load_val_N = 0;
     float load_val_O = 0;
     float load_val_P = 0;
-    const unsigned int row = blockDim.y * blockIdx.y + threadIdx.y;
     const unsigned int column = blockDim.x * blockIdx.x + threadIdx.x;
 
     __shared__ float subTileM[12 * 49];
@@ -43,23 +42,17 @@ __global__ void forward_kernel_logical_l1(const float* __restrict__ x, const flo
     if (threadIndex < weightDim*inputImageWidth) {
         const unsigned int inputImageRow = threadIndex / inputImageWidth;
         const unsigned int inputImageCol = threadIndex % inputImageWidth;
-        if (3 * blockIdx.z < numImages)
-            load_val_N = x[((3 * blockIdx.z) * inputImageHeight * inputImageWidth) + ( (inputImageRow + blockIdx.x) * inputImageWidth) + inputImageCol];
-        if (3 * blockIdx.z + 1 < numImages)
-            load_val_O = x[((3 * blockIdx.z + 1) * inputImageHeight * inputImageWidth) + ( (inputImageRow + blockIdx.x) * inputImageWidth) + inputImageCol];
-        if (3 * blockIdx.z + 2 < numImages)
-            load_val_P = x[((3 * blockIdx.z + 2) * inputImageHeight * inputImageWidth) + ( (inputImageRow + blockIdx.x) * inputImageWidth) + inputImageCol];
+        load_val_N = x[((3 * blockIdx.z) * inputImageHeight * inputImageWidth) + ( (inputImageRow + blockIdx.x) * inputImageWidth) + inputImageCol];
+        load_val_O = x[((3 * blockIdx.z + 1) * inputImageHeight * inputImageWidth) + ( (inputImageRow + blockIdx.x) * inputImageWidth) + inputImageCol];
+        load_val_P = x[((3 * blockIdx.z + 2) * inputImageHeight * inputImageWidth) + ( (inputImageRow + blockIdx.x) * inputImageWidth) + inputImageCol];
 
         int outputRow = inputImageRow * weightDim;
         int outputCol = inputImageCol;
         for (unsigned int i = 0; i < weightDim; i++) {
             if (outputCol >= 0 && outputCol < outputImageWidth){
-                if (3 * blockIdx.z < numImages)
-                    subTileN[outputRow][outputCol] = load_val_N;
-                if (3 * blockIdx.z + 1 < numImages)
-                    subTileO[outputRow][outputCol] = load_val_O;
-                if (3 * blockIdx.z + 2 < numImages)
-                    subTileP[outputRow][outputCol] = load_val_P;
+                subTileN[outputRow][outputCol] = load_val_N;
+                subTileO[outputRow][outputCol] = load_val_O;
+                subTileP[outputRow][outputCol] = load_val_P;
             }
             outputCol -= 1;
             outputRow += 1;
@@ -73,24 +66,21 @@ __global__ void forward_kernel_logical_l1(const float* __restrict__ x, const flo
     }
     __syncthreads();
 
-    if (row < numOutputChannels && column < outputMatrixWidth) {
+    if (threadIdx.y < numOutputChannels && column < outputMatrixWidth) {
         #pragma unroll
         for (unsigned int i = 0; i < 49; i++) {
-            //value += weights[(row*CONST_WEIGHT_DIM*CONST_WEIGHT_DIM) + i] * subTileN[i][threadIdx.x];
-            if (3 * blockIdx.z < numImages)
-                value_N += subTileM[(row*CONST_WEIGHT_DIM*CONST_WEIGHT_DIM) + i] * subTileN[i][threadIdx.x];
-            if (3 * blockIdx.z + 1 < numImages)
-                value_O += subTileM[(row*CONST_WEIGHT_DIM*CONST_WEIGHT_DIM) + i] * subTileO[i][threadIdx.x];
-            if (3 * blockIdx.z + 2 < numImages)
-                value_P += subTileM[(row*CONST_WEIGHT_DIM*CONST_WEIGHT_DIM) + i] * subTileP[i][threadIdx.x];
-            //value += tex2D(texDesc, row, i) * subTileN[i][threadIdx.x];
+            //value += weights[(threadIdx.y*CONST_WEIGHT_DIM*CONST_WEIGHT_DIM) + i] * subTileN[i][threadIdx.x];
+            value_N += subTileM[(threadIdx.y*CONST_WEIGHT_DIM*CONST_WEIGHT_DIM) + i] * subTileN[i][threadIdx.x];
+            value_O += subTileM[(threadIdx.y*CONST_WEIGHT_DIM*CONST_WEIGHT_DIM) + i] * subTileO[i][threadIdx.x];
+            value_P += subTileM[(threadIdx.y*CONST_WEIGHT_DIM*CONST_WEIGHT_DIM) + i] * subTileP[i][threadIdx.x];
+            //value += tex2D(texDesc, threadIdx.y, i) * subTileN[i][threadIdx.x];
         }
         if (3 * blockIdx.z < numImages)
-            y[(numOutputChannels * outputMatrixWidth * (3 * blockIdx.z)) + (outputMatrixWidth * row) + column] = value_N;
+            y[(numOutputChannels * outputMatrixWidth * (3 * blockIdx.z)) + (outputMatrixWidth * threadIdx.y) + column] = value_N;
         if (3 * blockIdx.z + 1 < numImages)
-            y[(numOutputChannels * outputMatrixWidth * (3 * blockIdx.z + 1)) + (outputMatrixWidth * row) + column] = value_O;
+            y[(numOutputChannels * outputMatrixWidth * (3 * blockIdx.z + 1)) + (outputMatrixWidth * threadIdx.y) + column] = value_O;
         if (3 * blockIdx.z + 2 < numImages)
-            y[(numOutputChannels * outputMatrixWidth * (3 * blockIdx.z + 2)) + (outputMatrixWidth * row) + column] = value_P;
+            y[(numOutputChannels * outputMatrixWidth * (3 * blockIdx.z + 2)) + (outputMatrixWidth * threadIdx.y) + column] = value_P;
     }
 }
 
@@ -103,7 +93,10 @@ __global__ void forward_kernel_logical_l2(const float* __restrict__ x, const flo
     float value_O = 0;
     float value_P = 0;
     float value_Q = 0;
-    const unsigned int row = blockDim.y * blockIdx.y + threadIdx.y;
+    float load_val_N = 0;
+    float load_val_O = 0;
+    float load_val_P = 0;
+    float load_val_Q = 0;
     const unsigned int column = blockDim.x * blockIdx.x + threadIdx.x;
 
     __shared__ float subTileM[24][49];
@@ -121,15 +114,15 @@ __global__ void forward_kernel_logical_l2(const float* __restrict__ x, const flo
     #pragma unroll
     for (unsigned int channelNum = 0; channelNum < 12; channelNum++) {
         if (threadIndex < 231) {
-            float load_val_N = x[((4 * blockIdx.z) * 13068) + (channelNum * 1089) + ( (inputImageRow + blockIdx.x) * 33) + inputImageCol];
-            float load_val_O = x[((4 * blockIdx.z + 1 )* 13068) + (channelNum * 1089) + ( (inputImageRow + blockIdx.x) * 33) + inputImageCol];
-            float load_val_P = x[((4 * blockIdx.z + 2 )* 13068) + (channelNum * 1089) + ( (inputImageRow + blockIdx.x) * 33) + inputImageCol];
-            float load_val_Q = x[((4 * blockIdx.z + 3 )* 13068) + (channelNum * 1089) + ( (inputImageRow + blockIdx.x) * 33) + inputImageCol];
+            load_val_N = x[((4 * blockIdx.z) * 13068) + (channelNum * 1089) + ( (inputImageRow + blockIdx.x) * 33) + inputImageCol];
+            load_val_O = x[((4 * blockIdx.z + 1 ) * 13068) + (channelNum * 1089) + ( (inputImageRow + blockIdx.x) * 33) + inputImageCol];
+            load_val_P = x[((4 * blockIdx.z + 2 ) * 13068) + (channelNum * 1089) + ( (inputImageRow + blockIdx.x) * 33) + inputImageCol];
+            load_val_Q = x[((4 * blockIdx.z + 3 ) * 13068) + (channelNum * 1089) + ( (inputImageRow + blockIdx.x) * 33) + inputImageCol];
 
             int outputRow = inputImageRow * 7;
             int outputCol = inputImageCol;
             for (unsigned int i = 0; i < 7; i++) {
-                if (outputCol >= 0 && outputCol < 27){
+                if (outputCol >= 0 && outputCol < 27) {
                     subTileN[outputRow][outputCol] = load_val_N;
                     subTileO[outputRow][outputCol] = load_val_O;
                     subTileP[outputRow][outputCol] = load_val_P;
@@ -150,24 +143,58 @@ __global__ void forward_kernel_logical_l2(const float* __restrict__ x, const flo
 
         #pragma unroll
         for (unsigned int i = 0; i < 49; i++) {
-            //value += weights[(row*numInputChannels*CONST_WEIGHT_DIM*CONST_WEIGHT_DIM) + (channelNum*CONST_WEIGHT_DIM*CONST_WEIGHT_DIM) + i] * subTileN[i][threadIdx.x];
+            //value_N += weights[(row*numInputChannels*CONST_WEIGHT_DIM*CONST_WEIGHT_DIM) + (channelNum*CONST_WEIGHT_DIM*CONST_WEIGHT_DIM) + i] * subTileN[i][threadIdx.x];
             //value_O += weights[(row*numInputChannels*CONST_WEIGHT_DIM*CONST_WEIGHT_DIM) + (channelNum*CONST_WEIGHT_DIM*CONST_WEIGHT_DIM) + i] * subTileO[i][threadIdx.x];
             //value_P += weights[(row*numInputChannels*CONST_WEIGHT_DIM*CONST_WEIGHT_DIM) + (channelNum*CONST_WEIGHT_DIM*CONST_WEIGHT_DIM) + i] * subTileP[i][threadIdx.x];
             //value_Q += weights[(row*numInputChannels*CONST_WEIGHT_DIM*CONST_WEIGHT_DIM) + (channelNum*CONST_WEIGHT_DIM*CONST_WEIGHT_DIM) + i] * subTileQ[i][threadIdx.x];
-            value_N += subTileM[row][i] * subTileN[i][threadIdx.x];
-            value_O += subTileM[row][i] * subTileO[i][threadIdx.x];
-            value_P += subTileM[row][i] * subTileP[i][threadIdx.x];
-            value_Q += subTileM[row][i] * subTileQ[i][threadIdx.x];
+            value_N += subTileM[threadIdx.y][i] * subTileN[i][threadIdx.x];
+            value_O += subTileM[threadIdx.y][i] * subTileO[i][threadIdx.x];
+            value_P += subTileM[threadIdx.y][i] * subTileP[i][threadIdx.x];
+            value_Q += subTileM[threadIdx.y][i] * subTileQ[i][threadIdx.x];
         }
         __syncthreads();
     }
 
-    if (row < 24 && column < 729) {
-        y[(17496 * (4 * blockIdx.z)) + (729 * row) + column] = value_N;
-        y[(17496 * (4 * blockIdx.z + 1)) + (729 * row) + column] = value_O;
-        y[(17496 * (4 * blockIdx.z + 2)) + (729 * row) + column] = value_P;
-        y[(17496 * (4 * blockIdx.z + 3)) + (729 * row) + column] = value_Q;
+    if (threadIdx.y < 24 && column < 729) {
+        y[(17496 * (4 * blockIdx.z)) + (729 * threadIdx.y) + column] = value_N;
+        y[(17496 * (4 * blockIdx.z + 1)) + (729 * threadIdx.y) + column] = value_O;
+        y[(17496 * (4 * blockIdx.z + 2)) + (729 * threadIdx.y) + column] = value_P;
+        y[(17496 * (4 * blockIdx.z + 3)) + (729 * threadIdx.y) + column] = value_Q;
     }
+}
+
+__constant__ float weightsL1[12][7][7];
+
+__global__ void forward_kernel(const float* x, float* y) {
+    #define input_image(i3,i1,i0) x[(i3)*(5184) + (i1)*(72) + i0]
+    #define output_image(i3,i2,i1,i0) y[(i3)*(52272) + (i2)*(4356) + (i1)*(66) + i0]
+    #define shared_image(i1,i0) x_shared[(i1)*(32) + i0]
+
+    __shared__ float x_shared[1024];
+
+    const unsigned int row = 26 * blockIdx.y + threadIdx.y;
+    const unsigned int column = 26 * blockIdx.x + threadIdx.x;
+
+    if (row < 72 && column < 72)
+        shared_image(threadIdx.y, threadIdx.x) = input_image(blockIdx.z, row, column);
+    __syncthreads();
+
+    unsigned int outputChan, k_y, k_x;
+    if (threadIdx.x < 26 && threadIdx.y < 26 && row < 66 && column < 66) {
+        for (outputChan = 0; outputChan < 12; outputChan++) {
+            float val = 0.0;
+            for (k_y = 0; k_y < 7; k_y++) {
+                for (k_x = 0; k_x < 7; k_x++) {
+                    val += weightsL1[outputChan][k_y][k_x] * shared_image(threadIdx.y + k_y, threadIdx.x + k_x);
+                }
+            }
+            output_image(blockIdx.z, outputChan, row, column) = val;
+        }
+    }
+
+    #undef shared_image
+    #undef output_image
+    #undef input_image
 }
 
 /* 
@@ -205,12 +232,18 @@ void forward<gpu, float>(mshadow::Tensor<gpu, 4, float> &y, const mshadow::Tenso
     //cudaMemcpyToSymbol(weights, k.dptr_, numOutputChannels * numInputChannels * weightDim * weightDim * sizeof(float));
 
     if (numInputChannels == 1) {
+        cudaMemcpyToSymbol(weightsL1, k.dptr_, numOutputChannels * numInputChannels * weightDim * weightDim * sizeof(float));
+        dim3 gridDim(ceil(66, 26), ceil(66, 26), numImages);
+        dim3 blockDim(32, 32, 1);
+
+        forward_kernel<<<gridDim, blockDim>>>(x.dptr_, y.dptr_);
+
         //fprintf(stdout, "Grid Dim Layer 1: %d, %d, %d, %d\n", unrolledMatrixWidth, numOutputChannels, ceil(unrolledMatrixWidth, 66), ceil(numOutputChannels, 12));
-        dim3 logicalUnrollGridDim(ceil(unrolledMatrixWidth, 66), ceil(numOutputChannels, 12), ceil(numImages, 3));
-        dim3 logicalUnrollBlockDim(66, 12, 1);
-        forward_kernel_logical_l1<<<logicalUnrollGridDim, logicalUnrollBlockDim>>>(x.dptr_, k.dptr_, y.dptr_, numImages, numInputChannels,
-                                                                                   inputImageHeight, inputImageWidth, weightDim, numOutputChannels,
-                                                                                   unrolledMatrixWidth, outputImageWidth);
+        //dim3 logicalUnrollGridDim(ceil(unrolledMatrixWidth, 66), ceil(numOutputChannels, 12), ceil(numImages, 3));
+        //dim3 logicalUnrollBlockDim(66, 12, 1);
+        //forward_kernel_logical_l1<<<logicalUnrollGridDim, logicalUnrollBlockDim>>>(x.dptr_, k.dptr_, y.dptr_, numImages, numInputChannels,
+        //                                                                           inputImageHeight, inputImageWidth, weightDim, numOutputChannels,
+        //                                                                           unrolledMatrixWidth, outputImageWidth);
     } else {
         //fprintf(stdout, "Grid Dim Layer 2: %d, %d, %d, %d\n", unrolledMatrixWidth, numOutputChannels, ceil(unrolledMatrixWidth, 27), ceil(numOutputChannels, 24));
         dim3 logicalUnrollGridDim(ceil(unrolledMatrixWidth, 27), ceil(numOutputChannels, 24), numImages / 4);
